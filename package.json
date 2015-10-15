@@ -1,0 +1,29 @@
+{
+  "name": "styler",
+  "version": "1.0.0",
+  "description": "Awesome in-place CSS-editing",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node node_modules/.bin/mocha **/*.test.js",
+    "build": "node node_modules/.bin/browserify index.js > dist/styler.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@gitlab.anzui.de:ondrej/styler.git"
+  },
+  "keywords": [
+    "css"
+  ],
+  "author": "Ondrej Brinkel <info@anzui.de>",
+  "license": "MIT",
+  "dependencies": {
+    "j2c": "^0.7.3",
+    "mithril": "^0.2.0"
+  },
+  "devDependencies": {
+    "expect.js": "^0.3.1",
+    "express": "^4.13.3",
+    "mocha": "^2.3.3"
+  }
+}
