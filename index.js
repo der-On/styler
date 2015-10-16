@@ -8,16 +8,15 @@ var uiStyles = j2c.sheet(require('./lib/ui/styles'));
 // inject ui stylesheet
 var uiStyleSheet = document.createElement('style');
 uiStyleSheet.type = 'text/css';
-uiStyleSheet.title = 'Styler UI';
+uiStyleSheet.setAttribute('name', 'Styler UI');
 uiStyleSheet.appendChild(document.createTextNode(uiStyles));
 document.head.appendChild(uiStyleSheet);
 
 // inject stylesheet
 var stylesheet = document.createElement('style');
 stylesheet.type = 'text/css';
-stylesheet.title = 'Overrides';
-var stylesheetContent = document.createTextNode('');
-stylesheet.appendChild(stylesheetContent);
+stylesheet.setAttribute('name', 'Overrides');
+stylesheet.appendChild(document.createTextNode(''));
 document.head.appendChild(stylesheet);
 
 // create main container
