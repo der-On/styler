@@ -9,14 +9,15 @@ var uiStyles = j2c.sheet(require('./lib/ui/styles'));
 // inject ui stylesheet
 var uiStyleSheet = document.createElement('style');
 uiStyleSheet.type = 'text/css';
+uiStyleSheet.setAttribute('name', 'Styler UI');
 uiStyleSheet.appendChild(document.createTextNode(uiStyles));
 document.head.appendChild(uiStyleSheet);
 
 // inject stylesheet
 var stylesheet = document.createElement('style');
 stylesheet.type = 'text/css';
-var stylesheetContent = document.createTextNode('');
-stylesheet.appendChild(stylesheetContent);
+stylesheet.setAttribute('name', 'Overrides');
+stylesheet.appendChild(document.createTextNode(''));
 document.head.appendChild(stylesheet);
 
 // create main container
@@ -24,74 +25,243 @@ var container = document.createElement('div');
 container.setAttribute('id', '-styler-root-');
 document.body.appendChild(container);
 
-m.mount(container, app(stylesheetContent));
+m.mount(container, app(stylesheet));
 
-},{"./lib/app":2,"./lib/ui/styles":7,"j2c":9,"mithril":10}],2:[function(require,module,exports){
+},{"./lib/app":2,"./lib/ui/styles":22,"j2c":25,"mithril":27}],2:[function(require,module,exports){
 'use strict';
 
 var m = require('mithril');
 var mc = m.component.bind(m);
 var j2c = require('j2c');
 var editor = require('../ui/editor');
+var header = require('../ui/header');
 var selection = require('../ui/selection');
 var utils = require('../utils');
+var Rule = require('./rule');
+var mapObj = require('map-obj');
 
-module.exports = function (stylesheetTextNode) {
+function trim(value) {
+  return value.trim();
+}
+
+function isNotEmpty(value) {
+  return value;
+}
+
+module.exports = function (stylesheet) {
   function controller() {
     var scope = {};
-    scope.selection = null;
+    scope.selected = null;
     scope.editing = false;
-    scope.navigating = false;
+    scope.mode = null;
+    scope.editMode = null;
 
+    /**
+     * Sets index of currently active stylesheet
+     * @param {Integer} index
+     */
+    scope.setActiveStylesheet = function (index) {
+      scope.stylesheetIndex = index;
+    };
+
+    /**
+     * Returns the currently active stylesheet
+     * @return {Object} { name: '...', rules: { ... } }
+     */
+    scope.activeStylesheet = function () {
+      return scope.stylesheets[scope.stylesheetIndex] || null;
+    };
+
+    /**
+     * Parses all stylesheets present in the document
+     * @return {Array}
+     */
+    scope.getStylesheets = function () {
+      var sheets = utils.toArray(document.styleSheets);
+
+      return sheets.map(function (sheet, index) {
+        return {
+          name: sheet.href || sheet.title || sheet.ownerNode.getAttribute('name') || 'inline-style ' + (index + 1),
+          rules: scope.parseStylesheet(sheet)
+        };
+      });
+    };
+
+    /**
+     * Parses stylesheet into an object
+     * @param  {CSSStyleSheet} sheet
+     * @return {Object}       { name: '...', rules: { ... } }
+     */
+    scope.parseStylesheet = function (sheet) {
+      // TODO: handle media queries
+      var rules = {};
+
+      utils.toArray(sheet.cssRules).forEach(function (cssRule) {
+        var text = cssRule.cssText;
+        var parts = text.split('{').map(trim);
+        var selector = parts.shift();
+        parts = parts.join('{').split('}');
+        parts.pop();
+        var properties = parts.join('}').trim().split(';').map(trim).filter(isNotEmpty);
+        var props = {};
+        var rule = Rule(selector);
+
+        properties.forEach(function (prop) {
+          var parts = prop.split(':');
+          var name = parts.shift().trim();
+          var value = parts.join(':').trim();
+          props[name] = value;
+        });
+
+        return rules[selector] = props;
+      });
+
+      return rules;
+    };
+
+    /**
+     * Returns live selection of elements based on current rule's selector
+     * @return {Array}
+     */
+    scope.selection = function () {
+      var els = [];
+
+      if (scope.rule && scope.rule.selector) {
+        try {
+          els = utils.toArray(document.querySelectorAll(scope.rule.selector));
+        } catch(e) {
+          els = [];
+        }
+      }
+
+      return els;
+    };
+
+    /**
+     * updates currently selected element
+     * @param  {MouseEvent} event
+     */
     scope.updateSelection = function (event) {
-      if (!scope.navigating && !scope.editing && event.target !== scope.selection && !utils.isWithinStyler(event.target)) {
-        scope.selection = event.target;
+      // only update selection if we are in select mode
+      // and the currently selected element is different
+      if (scope.mode === 'select' && !scope.editing && scope.selected !== event.target && !utils.isWithinStyler(event.target)) {
+        scope.selected = event.target;
         m.redraw();
       }
     }
 
+    /**
+     * Selects/Deselects an element and toggles the editor
+     * @param  {MouseEvent} event
+     */
     scope.selectElement = function (event) {
-      if (scope.navigating) {
+      // do not select if we are not in select mode
+      // or if the clicked element is within the styler UI
+      if (scope.mode !== 'select' || utils.isWithinStyler(event.target)) {
         return;
       }
 
       event.preventDefault();
       event.stopPropagation();
 
+      // deselect if we are currently editing
+      // and exit editing
       if (scope.editing) {
         if (!utils.isWithinStyler(event.target)) {
           scope.editing = false;
           m.redraw();
 
+          // after editor is hidden
+          // we can erase selection and rule
           utils.later(function () {
-            scope.selection = null;
+            scope.selected = null;
+            scope.rule = null;
           }, 500);
         }
 
         return;
-      }
-
-      if (!utils.isWithinStyler(event.target)) {
-        scope.selection = event.target;
+      } else if (scope.mode === 'select' && !utils.isWithinStyler(event.target)) {
+        // we clicked on an element outside the styler
+        // so use it as selection
+        scope.selected = event.target;
+        scope.rule = Rule(utils.getSelector(scope.selected));
         scope.editing = true;
         m.redraw();
       }
     }
 
-    document.body.removeEventListener('mousemove', scope.updateSelection);
-    document.body.addEventListener('mousemove', scope.updateSelection);
+    /**
+     * Applies the currently active style rule to the override stylesheet
+     */
+    scope.applyRule = function () {
+      var customStylesheet = scope.stylesheets[scope.stylesheets.length - 1];
 
-    document.body.removeEventListener('click', scope.selectElement);
-    document.body.addEventListener('click', scope.selectElement);
+      // update custom stylesheet
+      customStylesheet.rules[scope.rule.selector] = scope.rule.properties;
+
+      var css = j2c.sheet(
+        mapObj(customStylesheet.rules, function (key, value) {
+          return [key + ' ', value];
+        })
+      );
+
+      stylesheet.innerHTML = css;
+
+      m.redraw();
+    };
+
+    scope.setMode = function (mode) {
+      if (mode !== scope.mode) {
+        scope.mode = mode;
+
+        if (mode === 'select') {
+          document.body.addEventListener('mousemove', scope.updateSelection);
+          document.body.addEventListener('click', scope.selectElement);
+        }
+
+        if (mode === 'navigate') {
+          document.body.removeEventListener('mousemove', scope.updateSelection);
+          document.body.removeEventListener('click', scope.selectElement);
+
+          scope.selected = null;
+          scope.rule = null;
+          scope.editing = false;
+        }
+      }
+    };
+
+    scope.setEditMode = function (mode) {
+      scope.editMode = mode;
+    };
+
+    scope.setSelector = function (selector) {
+      var stylesheet = scope.activeStylesheet();
+
+      if (stylesheet.rules[selector]) {
+        scope.rule = Rule(selector);
+        scope.rule.properties = stylesheet.rules[selector];
+      } else {
+        scope.rule.selector = selector;
+      }
+    };
+
+    scope.stylesheets = scope.getStylesheets();
+    scope.stylesheetIndex = scope.stylesheets.length - 1;
+
+    scope.setMode('select');
+    scope.setEditMode('properties');
 
     return scope;
   }
 
   function view(scope) {
     return [
+      mc(header, scope),
+
       scope.selection ?
         mc(editor, scope)
       : null,
+
       mc(selection, scope)
     ];
   }
@@ -102,11 +272,34 @@ module.exports = function (stylesheetTextNode) {
   };
 };
 
-},{"../ui/editor":3,"../ui/selection":5,"../utils":8,"j2c":9,"mithril":10}],3:[function(require,module,exports){
+},{"../ui/editor":4,"../ui/header":10,"../ui/selection":20,"../utils":23,"./rule":3,"j2c":25,"map-obj":26,"mithril":27}],3:[function(require,module,exports){
+'use strict';
+
+module.exports = function (selector) {
+  var rule = {
+    selector: selector || null,
+    properties: {}
+  };
+
+  rule.toString = function () {
+    var str = rule.selector + ' {';
+    Object.keys(rule.properties).forEach(function (prop) {
+      str += prop + ': ' + rule.properties[prop] + '; ';
+    });
+    str += ' }';
+    return str;
+  };
+
+  return rule;
+};
+
+},{}],4:[function(require,module,exports){
 'use strict';
 
 var m = require('mithril');
 var utils = require('../../utils');
+var propertiesView = require('./properties.view');
+var selectorView = require('./selector.view');
 
 module.exports = {
   controller: function (parentScope) {
@@ -116,33 +309,269 @@ module.exports = {
       parentScope.editing = false;
     };
 
+    scope.addProperty = function (prop) {
+      if (!prop) {
+        return;
+      }
+      var computed = window.getComputedStyle(parentScope.selected);
+      parentScope.rule.properties[prop] = computed[prop] || null;
+    };
+
+    scope.config = function (el, inited) {
+      if (inited) {
+        return;
+      }
+
+      el.addEventListener('input', parentScope.applyRule);
+      el.addEventListener('change', parentScope.applyRule);
+    };
+
+    propertiesView = propertiesView(scope, parentScope);
+    selectorView = selectorView(scope, parentScope);
+
     return scope;
   },
   view: function (scope, parentScope) {
+    if (parentScope.editing) {
+      document.body.classList.add('-styler-editor-visible-');
+    } else {
+      document.body.classList.remove('-styler-editor-visible-');
+    }
+
     return m('aside.styler-editor', {
+      config: scope.config,
       className: !parentScope.editing ? 'hidden' : ''
     }, [
       m('button.styler-editor-close', {
         onclick: scope.close
       }, 'X'),
-      m('h3.styler-editor-selector', utils.getSelector(parentScope.selection))
+
+      parentScope.rule ?
+        selectorView() : null,
+
+      parentScope.rule && parentScope.editMode === 'properties' ?
+        propertiesView() : null
     ]);
   }
 }
 
-},{"../../utils":8,"mithril":10}],4:[function(require,module,exports){
+},{"../../utils":23,"./properties.view":5,"./selector.view":8,"mithril":27}],5:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+var property = require('./property');
+var propertyInputs = require('./property_inputs');
+var dashify = require('dashify');
+
+module.exports = function (scope, parentScope) {
+  function availableProperties() {
+    return Object.keys(propertyInputs.properties)
+      .filter(function (prop) {
+        return !parentScope.rule.properties[prop];
+      });
+  }
+
+  function propertyView(prop) {
+    return m.component(
+      property, parentScope.rule.properties, prop, {
+        onRemove: parentScope.applyRule
+      }
+    );
+  }
+
+  function addPropertyView() {
+    return m('label.styler-input-label', [
+      'Add Property',
+      m('select.styler-input.styler-editor-add-property', {
+        value: scope.newProperty,
+        onchange: m.withAttr('value', scope.addProperty)
+      }, [''].concat(availableProperties()).map(function (prop) {
+        return m('option', {
+          value: prop
+        }, dashify(prop));
+      }))
+    ]);
+  }
+
+  function propertiesView() {
+    return m('section.styler-editor-properties',
+      Object.keys(parentScope.rule.properties)
+        .map(propertyView)
+        .concat(addPropertyView())
+    );
+  }
+
+  return propertiesView;
+};
+
+},{"./property":6,"./property_inputs":7,"dashify":24,"mithril":27}],6:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+var propertyInputs = require('./property_inputs');
+
+module.exports = {
+  controller: function (target, prop, opts) {
+    opts = opts || {};
+    var scope = {};
+
+    scope.remove = function (event) {
+      delete target[prop];
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (opts.onRemove) {
+        opts.onRemove();
+      }
+    };
+
+    return scope;
+  },
+  view: function (scope, target, prop, opts) {
+    return m('.styler-rule-property', [
+      m('label.styler-rule-property-label', [
+        prop,
+        m.component(propertyInputs.getInputFor(prop), target, prop)
+      ]),
+      m('button.styler-rule-property-remove', {
+        onclick: scope.remove
+      }, 'X')
+    ]);
+  }
+};
+
+},{"./property_inputs":7,"mithril":27}],7:[function(require,module,exports){
+'use strict';
+
+var mapObj = require('map-obj');
+var dashify = require('dashify');
+
+var inputs = {
+  color: require('../inputs/color'),
+  text: require('../inputs/text'),
+  url: require('../inputs/url'),
+  range: require('../inputs/range'),
+  number: require('../inputs/number'),
+  select: require('../inputs/select'),
+  array: require('../inputs/array')
+};
+
+var props = {
+  fontSize: inputs.number(),
+  fontFamily: inputs.text(),
+  fontWeight: inputs.select({
+    options: ['normal', 'bold', 'bolder', 'lighter', 100, 200, 300, 400, 500, 600, 700, 800, 900, 'inherit']
+  }),
+  lineHeight: inputs.number(),
+
+  color: inputs.color(),
+
+  display: inputs.select({
+    options: [
+      'inline', 'inline-block', 'block', 'none',
+      'list-item', 'run-in',
+      'table', 'table-caption', 'table-cell', 'table-column', 'table-columns-group', 'table-footer-group', 'table-header-group', 'table-row', 'table-row-group',
+      'inherit'
+    ]
+  }),
+
+  position: inputs.select({
+    options: ['static', 'relative', 'absolute', 'fixed', 'inherit']
+  }),
+
+  top: inputs.number(),
+  right: inputs.number(),
+  bottom: inputs.number(),
+  left: inputs.number(),
+
+  backgroundColor: inputs.color(),
+  backgroundImage: inputs.url(),
+  backgroundRepeat: inputs.select({
+    options: ['repeat', 'repeat-x', 'repeat-y', 'no-repeat', 'inherit']
+  }),
+
+  backgroundPosition: inputs.array([
+    inputs.text(), inputs.text()
+  ]),
+
+  paddingTop: inputs.number(),
+  paddingRight: inputs.number(),
+  paddingBottom: inputs.number(),
+  paddingLeft: inputs.number(),
+
+  marginTop: inputs.number(),
+  marginRight: inputs.number(),
+  marginBottom: inputs.number(),
+  marginLeft: inputs.number(),
+
+  borderStyle: inputs.select({
+    options: ['none', 'solid', 'dotted', 'dashed', 'double', 'groove', 'ridge', 'inset', 'outset', 'inherit']
+  }),
+  borderWidth: inputs.number(),
+  borderTopWidth: inputs.number(),
+  borderRightWidth: inputs.number(),
+  borderBottomWidth: inputs.number(),
+  borderLeftWidth: inputs.number(),
+  borderColor: inputs.color(),
+};
+
+props = mapObj(props, function (key, value) {
+  return [dashify(key), value];
+});
+
+function getInputFor(prop) {
+  return props[prop] || inputs.text();
+}
+
+module.exports = {
+  properties: props,
+  inputs: inputs,
+  getInputFor: getInputFor
+};
+
+},{"../inputs/array":12,"../inputs/color":13,"../inputs/number":14,"../inputs/range":15,"../inputs/select":16,"../inputs/text":17,"../inputs/url":19,"dashify":24,"map-obj":26}],8:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+
+module.exports = function (scope, parentScope) {
+  function selectorOptionView(selector) {
+    return m('option', {
+      value: selector
+    }, selector);
+  }
+
+  function selectorView() {
+    return m('label.styler-input-label', [
+      'Selector',
+      m('input.styler-input.styler-rule-selector', {
+        type: 'text',
+        value: parentScope.rule.selector,
+        oninput: m.withAttr('value', parentScope.setSelector)
+      }),
+      m('select.styler-input.styler-rule-selector', {
+        value: parentScope.rule.selector || '',
+        onchange: m.withAttr('value', parentScope.setSelector)
+      }, [''].concat(Object.keys(parentScope.activeStylesheet().rules)).map(selectorOptionView))
+    ]);
+  }
+
+  return selectorView;
+};
+
+},{"mithril":27}],9:[function(require,module,exports){
 'use strict';
 
 module.exports = {
   '.styler-editor': {
     position: 'fixed',
-    top: '10px',
-    right: '10px',
-    bottom: '10xp',
-    width: '400px',
+    top: '50px',
+    right: 0,
+    bottom: 0,
+    width: '500px',
     background: '#ddd',
     padding: '10px',
-    box_shadow: '0px 0px 10px rgba(0, 0, 0, 0.5)',
+    box_shadow: '0px 0px 5px rgba(0, 0, 0, 0.25)',
     border: '1px solid #bbb',
     transition: 'all 0.5s',
     transform: 'translate(0, 0)',
@@ -157,12 +586,499 @@ module.exports = {
     top: '5px',
     right: '5px'
   },
-  '.styler-editor-selector': {
-    margin: '20px 0',
+  '.styler-rule-selector': {
+    width: '380px',
+  },
+  '.styler-editor-properties': {
+    overflow: 'auto',
+    position: 'absolute',
+    left: '10px',
+    right: '0',
+    top: '100px',
+    bottom: '10px',
+    paddding_right: '10px'
+  },
+  '.styler-input, .styler-input-unit': {
+    border: '1px solid #bbb',
+    border_radius: '3px',
+    color: '#333',
+    padding: '3px',
+    background: '#fff'
+  },
+  '.styler-rule-property, .styler-rule-selector': {
+    margin_bottom: '10px'
+  },
+  '.styler-rule-property-remove': {
+    margin_left: '10px'
+  },
+  '.styler-input-label, .styler-rule-property-label': {
+    font_weight: 'bold',
+
+    '& > .styler-input, & > .styler-input-wrapper': {
+      margin_left: '10px'
+    }
+  },
+  '.styler-input[type="number"]': {
+    max_width: '5em'
+  },
+  '.styler-input[type="color"]': {
+    margin_right: '10px'
+  },
+  '.styler-input-wrapper': {
+    display: 'inline-block'
   }
 };
 
-},{}],5:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+var utils = require('../../utils');
+
+module.exports = {
+  controller: function (parentScope) {
+    var scope = {};
+
+    document.body.classList.add('-styler-header-visible-');
+
+    scope.onunload = function () {
+      document.body.classList.remove('-styler-header-visible-');
+    };
+
+    return scope;
+  },
+  view: function (scope, parentScope) {
+    function stylesheetOptionView(sheet, index) {
+      return m('option', {
+        value: index
+      }, sheet.name);
+    }
+
+    return m('header.styler-header', [
+      'Navigate',
+      m('label.styler-input-label', [
+        m('input.styler-input', utils.removeEmpty({
+          type: 'radio',
+          value: 'select',
+          checked: parentScope.mode === 'select',
+          onclick: m.withAttr('value', parentScope.setMode)
+        })),
+        ' Select'
+      ]),
+      m('label.styler-input-label', [
+        m('input.styler-input', utils.removeEmpty({
+          type: 'radio',
+          value: 'navigate',
+          checked: parentScope.mode === 'navigate',
+          onclick: m.withAttr('value', parentScope.setMode)
+        })),
+        ' Normal'
+      ]),
+      ' | ',
+      'Edit',
+      m('label.styler-input-label', [
+        m('input.styler-input', utils.removeEmpty({
+          type: 'radio',
+          value: 'properties',
+          checked: parentScope.editMode === 'properties',
+          onclick: m.withAttr('value', parentScope.setEditMode)
+        })),
+        ' Properties'
+      ]),
+      m('label.styler-input-label', [
+        m('input.styler-input', utils.removeEmpty({
+          type: 'radio',
+          value: 'source',
+          checked: parentScope.editMode === 'source',
+          onclick: m.withAttr('value', parentScope.setEditMode)
+        })),
+        ' Sourcecode'
+      ]),
+      ' | ',
+      m('label.styler-input-label', [
+        'Stylesheet',
+        m('select.styler-input', {
+          value: parentScope.stylesheetIndex,
+          onchange: m.withAttr('value', parentScope.setActiveStylesheet)
+        }, parentScope.stylesheets.map(stylesheetOptionView))
+      ])
+    ]);
+  }
+};
+
+},{"../../utils":23,"mithril":27}],11:[function(require,module,exports){
+'use strict';
+
+module.exports = {
+  '.styler-header': {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    padding: '10px',
+    background: '#ddd',
+    box_shadow: '0px 0px 5px rgba(0, 0, 0, 0.25)',
+    border: '1px solid #bbb'
+  }
+};
+
+},{}],12:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+
+module.exports = function (inputs, delimiter) {
+  delimiter = delimiter || ' ';
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.values = (target[prop] || '').trim().split(delimiter);
+
+      scope.set = function (value) {
+        target[prop] = scope.values.join(delimiter);
+      };
+
+      scope.config = function (el, inited) {
+        if (inited) {
+          return;
+        }
+
+        el.addEventListener('oninput', scope.set);
+        el.addEventListener('onchange', scope.set);
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('input.styler-input-array', {
+        config: scope.config
+      }, inputs.map(function (input, index) {
+          return m.component(input, scope.values, index);
+        })
+      );
+    }
+  };
+};
+
+},{"mithril":27}],13:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+var number = require('./number');
+
+function componentToHex(c) {
+    var hex = c.toString(16);
+    return hex.length == 1 ? "0" + hex : hex;
+}
+
+function rgbToHex(r, g, b) {
+    return "#" + componentToHex(r) + componentToHex(g) + componentToHex(b);
+}
+
+function hexToRgb(hex) {
+    var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? [
+        parseInt(result[1], 16),
+        parseInt(result[2], 16),
+        parseInt(result[3], 16)
+    ] : [0, 0, 0];
+}
+
+function getAlpha(color) {
+  if (!color || !color.trim().length) {
+    return 1;
+  }
+
+  if (color.indexOf('rgba(') !== -1) {
+    return color
+      .replace('rgba(', '')
+      .replace(')', '')
+      .split(',').map(parseFloat).pop();
+  }
+
+  return 1;
+}
+
+function getColor(color) {
+  if (!color || color.indexOf('rgb') === -1) {
+    return color || '#000000';
+  }
+
+  var parts;
+
+  if (color.indexOf('rgba(') !== -1) {
+    parts = color.replace('rgba(', '').replace(')', '').split(',').map(parseFloat);
+    parts.pop();
+  } else if (color.indexOf('rgb(') !== -1) {
+    parts = color.replace('rgb(', '').replace(')', '').split(',').map(parseFloat);
+  }
+
+  return rgbToHex.apply(null, parts);
+}
+
+function withAlpha(color, alpha) {
+  if (alpha === 1) {
+    return color;
+  }
+
+  return 'rgba(' + hexToRgb(color || '#000000').concat(alpha).join(', ') + ')';
+}
+
+module.exports = function (opts) {
+  opts = opts || {};
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.alpha = getAlpha(target[prop]);
+      scope.color = getColor(target[prop]);
+
+      scope.set = function (value) {
+        scope.color = value;
+        target[prop] = withAlpha(value, scope.alpha);
+      };
+
+      scope.setAlpha = function (alpha) {
+        scope.alpha = alpha;
+        scope.set(scope.color);
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('.styler-input-wrapper', [
+        m('input.styler-input', {
+          type: 'color',
+          value: scope.color,
+          oninput: m.withAttr('value', scope.set)
+        }),
+
+        m('label.styler-input-label', [
+          'Alpha',
+          m('input.styler-input', {
+            type: 'range',
+            min: 0, max: 1, step: 0.01,
+            value: scope.alpha,
+            oninput: m.withAttr('value', scope.setAlpha)
+          }),
+          ' ', scope.alpha
+        ])
+      ]);
+    }
+  };
+};
+
+},{"./number":14,"mithril":27}],14:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+var units = require('./units');
+var utils = require('../../utils');
+
+function optionView(unit) {
+  return m('option', {
+    value: unit
+  }, unit);
+}
+
+function getNumber(value) {
+  return parseFloat(value);
+}
+
+function getUnit(value) {
+  return value.replace(getNumber(value).toString(), '');
+}
+
+module.exports = function (opts) {
+  opts = opts || {};
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.unit = opts.unit || getUnit(target[prop]) || 'px';
+      scope.number = getNumber(target[prop]);
+
+      scope.set = function (value) {
+        scope.number = value;
+        target[prop] = scope.number + scope.unit;
+      };
+
+      scope.setUnit = function (unit) {
+        scope.unit = unit;
+        scope.set(scope.number);
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('.styler-input-wrapper', [
+        m('input.styler-input', utils.removeEmpty({
+          type: 'number',
+          value: scope.number,
+          step: opts.step || false,
+          oninput: m.withAttr('value', scope.set)
+        })),
+        !opts.unit ?
+          m('select.styler-input-unit', {
+            value: scope.unit,
+            onchange: m.withAttr('value', scope.setUnit)
+          }, units.map(optionView))
+        : null
+      ]);
+    }
+  };
+};
+
+},{"../../utils":23,"./units":18,"mithril":27}],15:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+var units = require('./units');
+
+function optionView(unit) {
+  return m('option', {
+    value: unit
+  }, unit);
+}
+
+module.exports = function (opts) {
+  opts = opts || {};
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.unit = opts.unit || 'px';
+
+      scope.set = function (value) {
+        target[prop] = value + scope.unit;
+      };
+
+      scope.setUnit = function (unit) {
+        scope.unit = unit;
+        scope.set(parseFloat(target[prop]));
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('.styler-input-wrapper', [
+        m('input.styler-input', {
+          type: 'range',
+          value: target[prop] || 0,
+          min: opts.min || 0,
+          max: opts.max || 100,
+          step: opts.step || 0.0001,
+          oninput: m.withAttr('value', scope.set)
+        }),
+        m('select.styler-input-unit', {
+          value: scope.unit,
+          onchange: m.withAttr('value', scope.setUnit)
+        }, units.map(optionView))
+      ]);
+    }
+  };
+};
+
+},{"./units":18,"mithril":27}],16:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+
+function optionView(value) {
+  return m('option', {
+    value: value
+  }, value);
+}
+
+module.exports = function (opts) {
+  opts = opts || {};
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.set = function (value) {
+        target[prop] = value;
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('select.styler-input', {
+        value: target[prop] || '',
+        onchange: m.withAttr('value', scope.set)
+      }, (opts.options || []).map(optionView));
+    }
+  };
+};
+
+},{"mithril":27}],17:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+
+module.exports = function (opts) {
+  opts = opts || {};
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.set = function (value) {
+        target[prop] = value;
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('input.styler-input', {
+        type: 'text',
+        value: target[prop] || '',
+        oninput: m.withAttr('value', scope.set)
+      });
+    }
+  };
+};
+
+},{"mithril":27}],18:[function(require,module,exports){
+'use strict';
+
+module.exports = ['', 'px', 'em', 'rem', '%', 'pt', 'vm', 'vh', 'vmin', 'vmax'];
+
+},{}],19:[function(require,module,exports){
+'use strict';
+
+var m = require('mithril');
+
+module.exports = function (opts) {
+  opts = opts || {};
+
+  return {
+    controller: function (target, prop) {
+      var scope = {};
+
+      scope.set = function (value) {
+        target[prop] = 'url(' + value + ')';
+      };
+
+      return scope;
+    },
+    view: function (scope, target, prop) {
+      return m('input.styler-input', {
+        type: 'text',
+        value: target[prop] || '',
+        oninput: m.withAttr('value', scope.set)
+      });
+    }
+  };
+};
+
+},{"mithril":27}],20:[function(require,module,exports){
 'use strict';
 
 var m = require('mithril');
@@ -173,36 +1089,42 @@ module.exports = {
 
   },
   view: function (scope, parentScope) {
-    var el = parentScope.selection;
-
-    if (!el) {
-      return  m('.styler-selection.hidden');
-    }
-    var coords = utils.getCoords(el);
-    var width = el.scrollWidth;
-    var height = el.scrollHeight;
-
-    return m('.styler-selection', {
-      style: {
-        top: coords.top + 'px',
-        left: coords.left + 'px',
-        width: width + 'px',
-        height: height + 'px'
+    function elView(el) {
+      if (!el) {
+        return null;
       }
-    }, !parentScope.editing ?
-      m('.styler-selection-label', utils.getSelector(el))
-      : null
+
+      var coords = utils.getCoords(el);
+      var width = el.scrollWidth;
+      var height = el.scrollHeight;
+
+      return m('.styler-selection', {
+        style: {
+          top: coords.top + 'px',
+          left: coords.left + 'px',
+          width: width + 'px',
+          height: height + 'px'
+        }
+      }, !parentScope.editing ?
+        m('.styler-selection-label' +
+          (coords.top < 30 ? '.bottom' : '.top'), utils.getSelector(el))
+        : null
+      );
+    }
+
+    return m('.styler-selection-wrapper', parentScope.editing ?
+      parentScope.selection().map(elView) : elView(parentScope.selected)
     );
   }
 };
 
-},{"../../utils":8,"mithril":10}],6:[function(require,module,exports){
+},{"../../utils":23,"mithril":27}],21:[function(require,module,exports){
 'use strict';
 
 module.exports = {
   '.styler-selection ': {
     position: 'absolute',
-    border: '2px solid #f00',
+    border: '2px solid rgba(255, 0, 0, 0.5)',
     box_shadow: '0 0 5px rgba(0,0,0, 0.25)',
     pointer_events: 'none',
 
@@ -213,8 +1135,6 @@ module.exports = {
     '.styler-selection-label': {
       position: 'absolute',
       left: 0,
-      top: '100%',
-      margin_top: '2px',
       margin_left: '-2px',
       padding: '5px',
       font_size: '11px',
@@ -222,11 +1142,20 @@ module.exports = {
       white_space: 'nowrap',
       border: '1px solid #bbb',
       box_shadow: '0 0 5px rgba(0,0,0, 0.25)',
+
+      '&.top': {
+        bottom: '100%',
+        margin_bottom: '2px'
+      },
+      '&.bottom': {
+        top: '100%',
+        margin_top: '2px'
+      }
     }
   }
 };
 
-},{}],7:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 'use strict';
 
 module.exports = {
@@ -242,11 +1171,18 @@ module.exports = {
     },
 
     require('./selection/styles'),
-    require('./editor/styles')
-  ]
+    require('./editor/styles'),
+    require('./header/styles')
+  ],
+  'body.-styler-header-visible-': {
+    margin_top: '50px !important'
+  },
+  'body.-styler-editor-visible-': {
+    margin_right: '500px !important'
+  }
 };
 
-},{"./editor/styles":4,"./selection/styles":6}],8:[function(require,module,exports){
+},{"./editor/styles":9,"./header/styles":11,"./selection/styles":21}],23:[function(require,module,exports){
 'use strict';
 
 var m = require('mithril');
@@ -270,7 +1206,7 @@ function getSelector(el) {
   var className = el.className || null;
   var selector = el.tagName.toLowerCase() + (id ? '#' + id : '') + (className ? '.' + className.split(' ').join('.') : '');
 
-  if (el.parentElement) {
+  if (el.parentElement && el.parentElement.tagName.toLowerCase() !== 'body') {
     selector = getSelector(el.parentElement) + ' > ' + selector;
   }
 
@@ -299,14 +1235,54 @@ function later(fn, delay) {
   }, delay);
 }
 
+function removeEmpty(obj) {
+  var _obj = {};
+
+  Object.keys(obj).forEach(function (key) {
+    if (typeof obj[key] === 'undefined' || obj[key] ===false || obj[key] === null) {
+      return;
+    }
+
+    _obj[key] = obj[key];
+  });
+
+  return _obj;
+}
+
+function toArray(value) {
+  return value ? Array.prototype.slice.call(value) : [];
+}
+
 module.exports = {
   getCoords: getCoords,
   getSelector: getSelector,
   isWithinStyler: isWithinStyler,
-  later: later
+  later: later,
+  removeEmpty: removeEmpty,
+  toArray: toArray
 };
 
-},{"mithril":10}],9:[function(require,module,exports){
+},{"mithril":27}],24:[function(require,module,exports){
+/*!
+ * dashify <https://github.com/jonschlinkert/dashify>
+ *
+ * Copyright (c) 2015 Jon Schlinkert.
+ * Licensed under the MIT license.
+ */
+
+'use strict';
+
+module.exports = function dashify(str) {
+  if (typeof str !== 'string') {
+    throw new TypeError('dashify expects a string.');
+  }
+  str = str.replace(/[A-Z]/g, '-$&');
+  str = str.replace(/[ \t\W]/g, '-');
+  str = str.replace(/^\W+/, '');
+  return str.toLowerCase();
+};
+
+},{}],25:[function(require,module,exports){
 module.exports = (function () {
   var
     empty = [],
@@ -507,7 +1483,22 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */;
-},{}],10:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
+'use strict';
+module.exports = function (obj, cb) {
+	var ret = {};
+	var keys = Object.keys(obj);
+
+	for (var i = 0; i < keys.length; i++) {
+		var key = keys[i];
+		var res = cb(key, obj[key], obj);
+		ret[res[0]] = res[1];
+	}
+
+	return ret;
+};
+
+},{}],27:[function(require,module,exports){
 var m = (function app(window, undefined) {
 	var OBJECT = "[object Object]", ARRAY = "[object Array]", STRING = "[object String]", FUNCTION = "function";
 	var type = {}.toString;
