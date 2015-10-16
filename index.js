@@ -8,6 +8,7 @@ var uiStyles = j2c.sheet(require('./lib/ui/styles'));
 // inject ui stylesheet
 var uiStyleSheet = document.createElement('style');
 uiStyleSheet.type = 'text/css';
+uiStyleSheet.title = 'Styler UI';
 uiStyleSheet.appendChild(document.createTextNode(uiStyles));
 document.head.appendChild(uiStyleSheet);
 
@@ -24,4 +25,4 @@ var container = document.createElement('div');
 container.setAttribute('id', '-styler-root-');
 document.body.appendChild(container);
 
-m.mount(container, app(stylesheetContent));
+m.mount(container, app(stylesheet));
