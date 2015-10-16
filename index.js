@@ -15,7 +15,7 @@ document.head.appendChild(uiStyleSheet);
 // inject stylesheet
 var stylesheet = document.createElement('style');
 stylesheet.type = 'text/css';
-stylesheet.title = 'New stylesheet';
+stylesheet.title = 'Overrides';
 var stylesheetContent = document.createTextNode('');
 stylesheet.appendChild(stylesheetContent);
 document.head.appendChild(stylesheet);
