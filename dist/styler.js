@@ -96,25 +96,33 @@ module.exports = function (stylesheet) {
       // TODO: handle media queries
       var rules = {};
 
-      utils.toArray(sheet.cssRules).forEach(function (cssRule) {
-        var text = cssRule.cssText;
-        var parts = text.split('{').map(trim);
-        var selector = parts.shift();
-        parts = parts.join('{').split('}');
-        parts.pop();
-        var properties = parts.join('}').trim().split(';').map(trim).filter(isNotEmpty);
-        var props = {};
-        var rule = Rule(selector);
+      function parseRules() {
+        utils.toArray(sheet.cssRules).forEach(function (cssRule) {
+          var text = cssRule.cssText;
+          var parts = text.split('{').map(trim);
+          var selector = parts.shift();
+          parts = parts.join('{').split('}');
+          parts.pop();
+          var properties = parts.join('}').trim().split(';').map(trim).filter(isNotEmpty);
+          var props = {};
+          var rule = Rule(selector);
 
-        properties.forEach(function (prop) {
-          var parts = prop.split(':');
-          var name = parts.shift().trim();
-          var value = parts.join(':').trim();
-          props[name] = value;
+          properties.forEach(function (prop) {
+            var parts = prop.split(':');
+            var name = parts.shift().trim();
+            var value = parts.join(':').trim();
+            props[name] = value;
+          });
+
+          return rules[selector] = props;
         });
+      }
 
-        return rules[selector] = props;
-      });
+      try {
+        parseRules();
+      } catch (err) {
+        // ignore this stylesheet. As it's propably an external
+      }
 
       return rules;
     };
